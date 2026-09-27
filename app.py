@@ -55,6 +55,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self.db.get_item_for_user(int(parts[2]), user_id))
             if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "disagreements":
                 return self._json(200, {"disagreements": self.db.disagreements(int(parts[2]))})
+            if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "progress":
+                return self._json(200, self.db.batch_progress(int(parts[2])))
+            if len(parts) == 4 and parts[:2] == ["api", "annotators"] and parts[3] == "tasks":
+                batch_id = parse_qs(parsed.query).get("batch_id", [None])[0]
+                return self._json(200, self.db.annotator_tasks(int(parts[2]), int(batch_id) if batch_id else None))
             if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "consistency":
                 return self._json(200, self.db.consistency(int(parts[2])))
             if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "gold":
@@ -77,6 +82,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(201, {"ok": True, "id": self.db.add_item(int(parts[2]), int(body.get("ordinal", 0)), str(body.get("text", "")))})
             if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "assign":
                 return self._json(201, {"ok": True, "id": self.db.assign(int(body.get("item_id", 0)), int(body.get("annotator_id", 0)))})
+            if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "assign_all":
+                return self._json(201, {"ok": True, **self.db.assign_batch(int(parts[2]), body.get("annotator_ids", []))})
             if path == "/api/annotations":
                 return self._json(201, {"ok": True, "id": self.db.submit_annotation(int(body.get("item_id", 0)), int(body.get("annotator_id", 0)), str(body.get("label", "")), str(body.get("comment", "")))})
             if path == "/api/adjudications":

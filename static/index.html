@@ -1,8 +1,209 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>语料标注与仲裁</title>
-<style>body{font:15px system-ui;max-width:1080px;margin:24px auto;padding:0 16px;background:#f6f7f9}section{background:#fff;padding:16px;margin:12px 0;border:1px solid #ddd;border-radius:10px}input,textarea,select,button{padding:7px;margin:3px;border:1px solid #bbb;border-radius:6px}button{background:#235347;color:#fff}pre{white-space:pre-wrap;max-height:360px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.grid input,.grid textarea{width:90%}</style>
-<h1>语料标注与争议仲裁</h1><section><button onclick="load()">刷新状态</button><pre id="state"></pre></section>
-<section><h2>标注与讨论</h2><div class="grid"><input id="item" type="number" placeholder="条目 ID"><input id="user" type="number" placeholder="用户 ID"><input id="label" placeholder="标签"><textarea id="comment" placeholder="备注"></textarea><input id="batch" type="number" placeholder="批次 ID"><input id="manager" type="number" placeholder="管理员 ID"></div>
-<button onclick="annotate()">提交标注</button><button onclick="loadItem()">查看条目与讨论可见性</button><button onclick="disagreements()">查看分歧</button><button onclick="consistency()">一致性</button><button onclick="freeze()">冻结金标准</button><pre id="result"></pre></section>
-<section><h2>仲裁</h2><input id="arb" type="number" placeholder="仲裁员 ID"><input id="final" placeholder="最终标签"><input id="reason" placeholder="理由至少5字"><button onclick="adjudicate()">提交仲裁</button></section>
-<script>const result=document.querySelector('#result');const show=x=>result.textContent=JSON.stringify(x,null,2);async function get(u){return show(await(await fetch(u)).json())}async function post(u,b){return show(await(await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json())}async function load(){show(await(await fetch('/api/state')).json())}function annotate(){post('/api/annotations',{item_id:+item.value,annotator_id:+user.value,label:label.value,comment:comment.value})}function loadItem(){get('/api/items/'+item.value+'?user_id='+user.value)}function disagreements(){get('/api/batches/'+batch.value+'/disagreements')}function consistency(){get('/api/batches/'+batch.value+'/consistency')}function adjudicate(){post('/api/adjudications',{item_id:+item.value,arbitrator_id:+arb.value,final_label:final.value,reason:reason.value})}function freeze(){post('/api/batches/'+batch.value+'/freeze',{manager_id:+manager.value})}load()</script>
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>语料标注任务台</title>
+<style>
+body{font:15px system-ui;max-width:1080px;margin:24px auto;padding:0 16px;background:#f6f7f9}
+section{background:#fff;padding:16px;margin:12px 0;border:1px solid #ddd;border-radius:10px}
+input,textarea,select,button{padding:7px;margin:3px;border:1px solid #bbb;border-radius:6px}
+button{background:#235347;color:#fff;cursor:pointer}
+button:disabled{background:#9aa5a1;cursor:not-allowed}
+pre{white-space:pre-wrap;max-height:360px;overflow:auto;background:#f2f4f5;padding:8px;border-radius:6px}
+table{border-collapse:collapse;margin:8px 0}
+th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}
+details{border:1px solid #ddd;border-radius:8px;margin:6px 0;padding:8px}
+summary{cursor:pointer;font-weight:600}
+.gap{color:#b3261e;margin:4px 0}
+.ok{color:#1b7f4b}
+.muted{color:#666;font-size:13px}
+.checks label{display:inline-block;margin:4px 12px 4px 0}
+.task-form{margin-top:8px}
+.task-form input{width:220px}
+</style>
+<h1>语料标注任务台</h1>
+
+<section>
+  <h2>管理员 · 批量分派</h2>
+  <div>选择批次：<select id="assignBatch"></select></div>
+  <div class="checks" id="annotatorChecks"></div>
+  <button onclick="assignAll()">把本批条目派给勾选的标注员</button>
+  <span class="muted">已存在的分配沿用原记录，重复勾选不会新增任务。</span>
+  <pre id="assignResult"></pre>
+</section>
+
+<section>
+  <h2>标注员 · 我的任务</h2>
+  <div>我是：<select id="meSelect" onchange="loadTasks()"></select></div>
+  <h3>待标注</h3>
+  <div id="pendingList"></div>
+  <h3>已提交</h3>
+  <div id="submittedList"></div>
+  <pre id="taskResult"></pre>
+</section>
+
+<section>
+  <h2>批次详情 · 进度与冻结</h2>
+  <div>选择批次：<select id="detailBatch" onchange="loadProgress()"></select></div>
+  <div id="progressInfo"></div>
+  <table id="progressTable"></table>
+  <div id="gaps"></div>
+  <div>
+    操作管理员：<select id="managerSelect"></select>
+    <button id="freezeBtn" onclick="freezeBatch()" disabled>冻结金标准</button>
+    <button onclick="showConsistency()">一致性</button>
+    <button onclick="showDisagreements()">分歧列表</button>
+    <button onclick="showGold()">导出金标准</button>
+  </div>
+  <pre id="detailResult"></pre>
+</section>
+
+<section>
+  <h2>仲裁</h2>
+  <input id="arbItem" type="number" placeholder="条目 ID">
+  <select id="arbSelect"></select>
+  <input id="final" placeholder="最终标签">
+  <input id="reason" placeholder="理由至少5字">
+  <button onclick="adjudicate()">提交仲裁</button>
+  <pre id="arbResult"></pre>
+</section>
+
+<section>
+  <h2>条目与讨论可见性</h2>
+  <input id="viewItem" type="number" placeholder="条目 ID">
+  <select id="viewUser"></select>
+  <button onclick="loadItem()">查看条目</button>
+  <pre id="itemResult"></pre>
+</section>
+
+<section>
+  <h2>原始状态</h2>
+  <button onclick="refresh()">刷新状态</button>
+  <pre id="state"></pre>
+</section>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let state = {users: [], guidelines: [], batches: [], items: []};
+
+async function get(u){ return (await fetch(u)).json(); }
+async function post(u, b){ return (await fetch(u, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b || {})})).json(); }
+const byRole = role => state.users.filter(u => u.role === role);
+
+function fill(sel, options){
+  const prev = sel.value;
+  sel.innerHTML = options.map(o => `<option value="${o.value}">${esc(o.label)}</option>`).join('');
+  if (options.some(o => String(o.value) === prev)) sel.value = prev;
+}
+
+function renderSelectors(){
+  const batchOpts = state.batches.map(b => ({value: b.id, label: `#${b.id} ${b.name}（${b.status}）`}));
+  fill($('#assignBatch'), batchOpts);
+  fill($('#detailBatch'), batchOpts);
+  fill($('#meSelect'), byRole('annotator').map(u => ({value: u.id, label: u.name})));
+  fill($('#managerSelect'), byRole('manager').map(u => ({value: u.id, label: u.name})));
+  fill($('#arbSelect'), byRole('arbitrator').map(u => ({value: u.id, label: u.name})));
+  fill($('#viewUser'), state.users.map(u => ({value: u.id, label: `${u.name}（${u.role}）`})));
+  const box = $('#annotatorChecks');
+  const checked = new Set([...box.querySelectorAll('input:checked')].map(i => i.value));
+  box.innerHTML = byRole('annotator').map(u =>
+    `<label><input type="checkbox" value="${u.id}"${checked.has(String(u.id)) ? ' checked' : ''}> ${esc(u.name)}</label>`
+  ).join('') || '<span class="muted">暂无标注员</span>';
+}
+
+async function refresh(){
+  state = await get('/api/state');
+  renderSelectors();
+  $('#state').textContent = JSON.stringify(state, null, 2);
+  await loadTasks();
+  await loadProgress();
+}
+
+async function assignAll(){
+  const ids = [...document.querySelectorAll('#annotatorChecks input:checked')].map(i => +i.value);
+  const res = await post(`/api/batches/${$('#assignBatch').value}/assign_all`, {annotator_ids: ids});
+  $('#assignResult').textContent = JSON.stringify(res, null, 2);
+  await refresh();
+}
+
+async function loadTasks(){
+  const uid = $('#meSelect').value;
+  if (!uid){ $('#pendingList').innerHTML = ''; $('#submittedList').innerHTML = ''; return; }
+  const data = await get(`/api/annotators/${uid}/tasks`);
+  $('#pendingList').innerHTML = data.pending.length ? data.pending.map(t => `
+    <details>
+      <summary>批次「${esc(t.batch_name)}」 #${t.ordinal}：${esc(t.text)}</summary>
+      <div class="task-form">
+        <input id="label-${t.item_id}" placeholder="标签">
+        <input id="comment-${t.item_id}" placeholder="备注">
+        <button onclick="submitTask(${t.item_id})">提交标注</button>
+      </div>
+    </details>`).join('') : '<p class="muted">没有待标注条目</p>';
+  $('#submittedList').innerHTML = data.submitted.length ? data.submitted.map(t => `
+    <details>
+      <summary>批次「${esc(t.batch_name)}」 #${t.ordinal}：${esc(t.text)}</summary>
+      <div>标签：<b>${esc(t.label)}</b>　备注：${esc(t.comment || '（无）')}<br>
+      <span class="muted">提交于 ${esc(t.submitted_at || '')}</span></div>
+    </details>`).join('') : '<p class="muted">还没有已提交条目</p>';
+}
+
+async function submitTask(itemId){
+  const res = await post('/api/annotations', {
+    item_id: itemId,
+    annotator_id: +$('#meSelect').value,
+    label: $(`#label-${itemId}`).value,
+    comment: $(`#comment-${itemId}`).value,
+  });
+  $('#taskResult').textContent = JSON.stringify(res, null, 2);
+  await refresh();
+}
+
+async function loadProgress(){
+  const bid = $('#detailBatch').value;
+  if (!bid){ $('#progressTable').innerHTML = ''; $('#gaps').innerHTML = ''; $('#progressInfo').innerHTML = ''; return; }
+  const p = await get(`/api/batches/${bid}/progress`);
+  $('#progressInfo').innerHTML = `批次「${esc(p.batch_name)}」状态：<b>${esc(p.status)}</b>，条目数：${p.item_count}`;
+  $('#progressTable').innerHTML = p.annotators.length
+    ? '<tr><th>标注员</th><th>任务总数</th><th>已完成</th><th>待完成</th></tr>' +
+      p.annotators.map(a => `<tr><td>${esc(a.name)}</td><td>${a.total}</td><td>${a.submitted}</td><td>${a.pending}</td></tr>`).join('')
+    : '<tr><td class="muted">尚未分派任务</td></tr>';
+  const msgs = [];
+  if (p.pending_gaps.length)
+    msgs.push('未提交任务：' + p.pending_gaps.map(g => `${esc(g.annotator)} · 条目#${g.ordinal}`).join('；'));
+  if (p.under_annotated.length)
+    msgs.push('标注不足两份的条目：' + p.under_annotated.map(o => '#' + o).join('、'));
+  if (p.open_disagreements)
+    msgs.push(`未仲裁分歧：${p.open_disagreements} 条`);
+  if (p.status === 'frozen')
+    $('#gaps').innerHTML = '<p class="muted">批次已冻结。</p>';
+  else if (p.freeze_ready)
+    $('#gaps').innerHTML = '<p class="ok">任务已交齐，可以冻结。</p>';
+  else
+    $('#gaps').innerHTML = msgs.map(m => `<p class="gap">⚠ ${m}</p>`).join('');
+  $('#freezeBtn').disabled = !p.freeze_ready;
+}
+
+async function freezeBatch(){
+  const res = await post(`/api/batches/${$('#detailBatch').value}/freeze`, {manager_id: +$('#managerSelect').value});
+  $('#detailResult').textContent = JSON.stringify(res, null, 2);
+  await refresh();
+}
+async function showConsistency(){ $('#detailResult').textContent = JSON.stringify(await get(`/api/batches/${$('#detailBatch').value}/consistency`), null, 2); }
+async function showDisagreements(){ $('#detailResult').textContent = JSON.stringify(await get(`/api/batches/${$('#detailBatch').value}/disagreements`), null, 2); }
+async function showGold(){ $('#detailResult').textContent = JSON.stringify(await get(`/api/batches/${$('#detailBatch').value}/gold`), null, 2); }
+
+async function adjudicate(){
+  const res = await post('/api/adjudications', {
+    item_id: +$('#arbItem').value,
+    arbitrator_id: +$('#arbSelect').value,
+    final_label: $('#final').value,
+    reason: $('#reason').value,
+  });
+  $('#arbResult').textContent = JSON.stringify(res, null, 2);
+  await refresh();
+}
+
+async function loadItem(){
+  $('#itemResult').textContent = JSON.stringify(await get(`/api/items/${$('#viewItem').value}?user_id=${$('#viewUser').value}`), null, 2);
+}
+
+refresh();
+</script>
 </html>
