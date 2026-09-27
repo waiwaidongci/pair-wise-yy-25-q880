@@ -50,6 +50,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/state":
                 return self._json(200, self.db.snapshot())
+            if len(parts) == 4 and parts[:2] == ["api", "users"] and parts[3] == "tasks":
+                user_id = int(parse_qs(parsed.query).get("user_id", [0])[0])
+                batch_param = parse_qs(parsed.query).get("batch_id")
+                batch_id = int(batch_param[0]) if batch_param else None
+                return self._json(200, self.db.tasks_for_user(user_id, batch_id))
+            if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "progress":
+                return self._json(200, self.db.batch_progress(int(parts[2])))
             if len(parts) == 3 and parts[:2] == ["api", "items"]:
                 user_id = int(parse_qs(parsed.query).get("user_id", [0])[0])
                 return self._json(200, self.db.get_item_for_user(int(parts[2]), user_id))
@@ -76,7 +83,10 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "items":
                 return self._json(201, {"ok": True, "id": self.db.add_item(int(parts[2]), int(body.get("ordinal", 0)), str(body.get("text", "")))})
             if len(parts) == 4 and parts[:2] == ["api", "batches"] and parts[3] == "assign":
-                return self._json(201, {"ok": True, "id": self.db.assign(int(body.get("item_id", 0)), int(body.get("annotator_id", 0)))})
+                payload = body.get("annotator_ids")
+                if payload is None:
+                    return self._json(201, {"ok": True, "id": self.db.assign(int(body.get("item_id", 0)), int(body.get("annotator_id", 0)))})
+                return self._json(201, {"ok": True, **self.db.assign_batch(int(parts[2]), payload)})
             if path == "/api/annotations":
                 return self._json(201, {"ok": True, "id": self.db.submit_annotation(int(body.get("item_id", 0)), int(body.get("annotator_id", 0)), str(body.get("label", "")), str(body.get("comment", "")))})
             if path == "/api/adjudications":

@@ -126,6 +126,7 @@ class CorpusDB:
         a1 = self.add_user("标注员甲", "annotator")
         a2 = self.add_user("标注员乙", "annotator")
         arb = self.add_user("仲裁员", "arbitrator")
+        self.add_user("管理员", "manager")
         guideline = self.add_guideline("v1", "标签仅可为 正向/负向/中性；先独立标注，不得查看他人答案。")
         batch = self.create_batch("情感标注示例", guideline)
         item1 = self.add_item(batch, 1, "这个更新让工作流畅了很多。")
@@ -194,6 +195,57 @@ class CorpusDB:
             except sqlite3.IntegrityError as exc:
                 raise DomainError("同一标注员不能重复领取同一条目") from exc
         return int(cur.lastrowid)
+
+    def assign_batch(self, batch_id: int, annotator_ids: list) -> dict:
+        """把整批条目一次性派给多位标注员；已有的 (条目, 标注员) 分配沿用，不重复建任务。"""
+        if not isinstance(annotator_ids, list):
+            raise DomainError("annotator_ids 必须是数组")
+        batch = self.conn.execute("SELECT id,status FROM batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch:
+            raise DomainError("批次不存在")
+        if batch["status"] == "frozen":
+            raise DomainError("批次已冻结，不能再分派任务")
+        ids: list[int] = []
+        for raw in annotator_ids:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise DomainError("标注员 ID 无效") from exc
+            if value not in ids:
+                ids.append(value)
+        if not ids:
+            raise DomainError("至少勾选一位标注员")
+        placeholders = ",".join("?" for _ in ids)
+        users = self.conn.execute(
+            f"SELECT id,name,role FROM users WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        if len(users) != len(ids):
+            raise DomainError("勾选了不存在的用户")
+        forbidden = [u["name"] for u in users if u["role"] != "annotator"]
+        if forbidden:
+            raise DomainError("只能分派给标注员: " + "、".join(forbidden))
+        items = self.conn.execute("SELECT id FROM items WHERE batch_id=?", (batch_id,)).fetchall()
+        if not items:
+            raise DomainError("批次还没有条目，无法分派")
+        created = skipped = 0
+        with self.transaction():
+            self.conn.execute(
+                "UPDATE batches SET status='annotating' WHERE id=? AND status='draft'", (batch_id,)
+            )
+            for item in items:
+                for annotator_id in ids:
+                    cur = self.conn.execute(
+                        "INSERT OR IGNORE INTO assignments(batch_id,item_id,annotator_id) VALUES(?,?,?)",
+                        (batch_id, item["id"], annotator_id),
+                    )
+                    if cur.rowcount:
+                        created += 1
+                    else:
+                        skipped += 1
+        return {
+            "batch_id": batch_id, "items": len(items), "annotators": len(ids),
+            "created": created, "skipped": skipped,
+        }
 
     def submit_annotation(self, item_id: int, annotator_id: int, label: str, comment: str = "") -> int:
         if not label.strip():
@@ -414,6 +466,95 @@ class CorpusDB:
         return {
             "batch_id": batch_id, "batch_name": batch["name"], "frozen_at": freeze["frozen_at"],
             "metrics": json.loads(freeze["metrics_json"]), "records": [dict(row) for row in rows],
+        }
+
+    def tasks_for_user(self, annotator_id: int, batch_id: int | None = None) -> dict:
+        """标注员本人的任务台：待标注与已提交条目。"""
+        user = self.conn.execute("SELECT id,name,role FROM users WHERE id=?", (annotator_id,)).fetchone()
+        if not user:
+            raise DomainError("用户不存在")
+        if user["role"] != "annotator":
+            raise DomainError("只有标注员拥有标注任务台")
+        clauses, params = ["asg.annotator_id=?"], [annotator_id]
+        if batch_id is not None:
+            clauses.append("asg.batch_id=?")
+            params.append(batch_id)
+        where = " AND ".join(clauses)
+        rows = self.conn.execute(
+            "SELECT asg.batch_id,b.name AS batch_name,b.status AS batch_status,"
+            "asg.item_id,i.ordinal,i.text,asg.status,g.version AS guideline_version,"
+            "a.label,a.comment,a.created_at AS submitted_at "
+            "FROM assignments asg "
+            "JOIN batches b ON b.id=asg.batch_id JOIN items i ON i.id=asg.item_id "
+            "JOIN guidelines g ON g.id=b.guideline_id "
+            "LEFT JOIN annotations a ON a.item_id=asg.item_id AND a.annotator_id=asg.annotator_id AND a.guideline_id=b.guideline_id "
+            f"WHERE {where} ORDER BY asg.batch_id,i.ordinal",
+            params,
+        ).fetchall()
+        pending = [dict(r) for r in rows if r["status"] == "assigned"]
+        submitted = [dict(r) for r in rows if r["status"] == "submitted"]
+        return {
+            "user": {"id": user["id"], "name": user["name"], "role": user["role"]},
+            "total": len(rows), "pending_count": len(pending), "submitted_count": len(submitted),
+            "pending": pending, "submitted": submitted,
+        }
+
+    def batch_progress(self, batch_id: int) -> dict:
+        """批次详情：每位标注员的总数/完成数/待完成数，以及未交齐的条目缺口。"""
+        batch = self.conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch:
+            raise DomainError("批次不存在")
+        items = self.conn.execute(
+            "SELECT id,ordinal FROM items WHERE batch_id=? ORDER BY ordinal", (batch_id,)
+        ).fetchall()
+        people_rows = self.conn.execute(
+            "SELECT u.id,u.name FROM users u WHERE u.role='annotator' AND EXISTS ("
+            "SELECT 1 FROM assignments a WHERE a.batch_id=? AND a.annotator_id=u.id) ORDER BY u.id",
+            (batch_id,),
+        ).fetchall()
+        people = []
+        for person in people_rows:
+            total = self.conn.execute(
+                "SELECT COUNT(*) FROM assignments WHERE batch_id=? AND annotator_id=?",
+                (batch_id, person["id"]),
+            ).fetchone()[0]
+            done = self.conn.execute(
+                "SELECT COUNT(*) FROM assignments WHERE batch_id=? AND annotator_id=? AND status='submitted'",
+                (batch_id, person["id"]),
+            ).fetchone()[0]
+            people.append({
+                "annotator_id": person["id"], "name": person["name"],
+                "total": total, "completed": done, "remaining": total - done,
+            })
+        gaps = []
+        for item in items:
+            missing_rows = self.conn.execute(
+                "SELECT u.id,u.name FROM assignments a JOIN users u ON u.id=a.annotator_id "
+                "WHERE a.item_id=? AND a.status='assigned' ORDER BY u.id", (item["id"],)
+            ).fetchall()
+            if missing_rows:
+                gaps.append({
+                    "item_id": item["id"], "ordinal": item["ordinal"],
+                    "missing_annotators": [r["name"] for r in missing_rows],
+                    "missing_annotator_ids": [r["id"] for r in missing_rows],
+                })
+        open_disagreements = len(self.disagreements(batch_id))
+        return {
+            "batch_id": batch_id, "batch_name": batch["name"], "status": batch["status"],
+            "item_count": len(items),
+            "people": people,
+            "gaps": gaps,
+            "unassigned_items": [
+                item["ordinal"] for item in items
+                if not self.conn.execute(
+                    "SELECT 1 FROM assignments WHERE item_id=?", (item["id"],)
+                ).fetchone()
+            ],
+            "open_disagreements": open_disagreements,
+            "all_submitted": bool(items) and not gaps and not self.conn.execute(
+                "SELECT 1 FROM items i WHERE i.batch_id=? AND NOT EXISTS ("
+                "SELECT 1 FROM assignments a WHERE a.item_id=i.id)", (batch_id,)
+            ).fetchone(),
         }
 
     def snapshot(self) -> dict:

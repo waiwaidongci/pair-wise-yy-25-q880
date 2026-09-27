@@ -1,8 +1,373 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>语料标注与仲裁</title>
-<style>body{font:15px system-ui;max-width:1080px;margin:24px auto;padding:0 16px;background:#f6f7f9}section{background:#fff;padding:16px;margin:12px 0;border:1px solid #ddd;border-radius:10px}input,textarea,select,button{padding:7px;margin:3px;border:1px solid #bbb;border-radius:6px}button{background:#235347;color:#fff}pre{white-space:pre-wrap;max-height:360px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.grid input,.grid textarea{width:90%}</style>
-<h1>语料标注与争议仲裁</h1><section><button onclick="load()">刷新状态</button><pre id="state"></pre></section>
-<section><h2>标注与讨论</h2><div class="grid"><input id="item" type="number" placeholder="条目 ID"><input id="user" type="number" placeholder="用户 ID"><input id="label" placeholder="标签"><textarea id="comment" placeholder="备注"></textarea><input id="batch" type="number" placeholder="批次 ID"><input id="manager" type="number" placeholder="管理员 ID"></div>
-<button onclick="annotate()">提交标注</button><button onclick="loadItem()">查看条目与讨论可见性</button><button onclick="disagreements()">查看分歧</button><button onclick="consistency()">一致性</button><button onclick="freeze()">冻结金标准</button><pre id="result"></pre></section>
-<section><h2>仲裁</h2><input id="arb" type="number" placeholder="仲裁员 ID"><input id="final" placeholder="最终标签"><input id="reason" placeholder="理由至少5字"><button onclick="adjudicate()">提交仲裁</button></section>
-<script>const result=document.querySelector('#result');const show=x=>result.textContent=JSON.stringify(x,null,2);async function get(u){return show(await(await fetch(u)).json())}async function post(u,b){return show(await(await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json())}async function load(){show(await(await fetch('/api/state')).json())}function annotate(){post('/api/annotations',{item_id:+item.value,annotator_id:+user.value,label:label.value,comment:comment.value})}function loadItem(){get('/api/items/'+item.value+'?user_id='+user.value)}function disagreements(){get('/api/batches/'+batch.value+'/disagreements')}function consistency(){get('/api/batches/'+batch.value+'/consistency')}function adjudicate(){post('/api/adjudications',{item_id:+item.value,arbitrator_id:+arb.value,final_label:final.value,reason:reason.value})}function freeze(){post('/api/batches/'+batch.value+'/freeze',{manager_id:+manager.value})}load()</script>
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>语料标注任务台</title>
+<style>
+  :root{--brand:#235347;--brand2:#2f6f5e;--line:#d9dde2;--muted:#6b7280;--bg:#f4f6f8;--warn:#b45309;--danger:#b91c1c;--ok:#15803d}
+  *{box-sizing:border-box}
+  body{font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:1100px;margin:0 auto;padding:0 16px 48px;background:var(--bg);color:#1f2937}
+  h1{font-size:22px;margin:20px 0 12px}
+  h2{font-size:17px;margin:0 0 10px}
+  h3{font-size:15px;margin:14px 0 6px}
+  section,.card{background:#fff;padding:16px;margin:12px 0;border:1px solid var(--line);border-radius:10px}
+  .topbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .topbar label{color:var(--muted)}
+  input,textarea,select,button{padding:7px 9px;margin:2px;border:1px solid #b7bdc4;border-radius:6px;font:inherit;background:#fff}
+  textarea{width:100%;resize:vertical}
+  button{background:var(--brand);color:#fff;border-color:var(--brand);cursor:pointer}
+  button.ghost{background:#fff;color:var(--brand)}
+  button:disabled{background:#c6cbcf;border-color:#c6cbcf;cursor:not-allowed}
+  button.small{padding:3px 9px;font-size:13px}
+  table{border-collapse:collapse;width:100%;margin-top:6px}
+  th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+  th{background:#f0f3f1;font-weight:600}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;margin-left:6px}
+  .tag.pending{background:#fef3c7;color:#92400e}
+  .tag.done{background:#dcfce7;color:#166534}
+  .tag.frozen{background:#e5e7eb;color:#374151}
+  .tag.run{background:#dbeafe;color:#1e40af}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .muted{color:var(--muted)}
+  .stat{font-weight:600}
+  .pill{display:inline-block;background:#eef2f0;border:1px solid var(--line);border-radius:999px;padding:2px 10px;margin:2px;font-size:13px}
+  .item-card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0;background:#fcfdfd}
+  .item-card summary{cursor:pointer;font-weight:600}
+  .gap{color:var(--danger)}
+  .warn{color:var(--warn)}
+  .ok{color:var(--ok)}
+  .msg{margin-top:8px;font-size:13px;white-space:pre-wrap}
+  .msg.err{color:var(--danger)}
+  .msg.ok{color:var(--ok)}
+  .chk label{display:inline-block;padding:4px 10px;margin:2px;border:1px solid var(--line);border-radius:999px;cursor:pointer;background:#fafbfc}
+  .chk input{margin-right:5px}
+  .hidden{display:none}
+  .discuss{border-top:1px dashed var(--line);margin-top:8px;padding-top:6px}
+  .label-chip{background:#eef5f1;color:var(--brand);border-radius:6px;padding:0 7px;font-weight:600}
+</style>
+
+<h1>语料标注任务台</h1>
+
+<section class="topbar">
+  <label for="who">当前身份</label>
+  <select id="who" style="min-width:200px"></select>
+  <span id="whoTag"></span>
+  <button class="ghost" onclick="reloadAll()">刷新</button>
+  <span class="muted" id="clock"></span>
+</section>
+
+<main id="views"></main>
+
+<section>
+  <h2>结果 / 提示</h2>
+  <pre id="msg" class="msg"></pre>
+</section>
+
+<script>
+const $ = s => document.querySelector(s);
+const msgEl = $('#msg');
+let state = {users: [], batches: [], items: []};
+let meId = Number(localStorage.getItem('taskboard_me') || 0);
+
+function say(text, ok){ msgEl.className = 'msg ' + (ok ? 'ok' : 'err'); msgEl.textContent = text; }
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function roleName(r){ return {manager:'管理员', annotator:'标注员', arbitrator:'仲裁员'}[r] || r; }
+function batchTag(b){
+  if (b.status === 'frozen') return '<span class="tag frozen">已冻结</span>';
+  if (b.status === 'annotating') return '<span class="tag run">标注中</span>';
+  return '<span class="tag pending">草稿</span>';
+}
+async function api(path, opts){
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({ok:false, error:'响应解析失败'}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || ('请求失败 (' + res.status + ')'));
+  return data;
+}
+async function post(path, body){ return api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); }
+async function get(path){ return api(path); }
+
+async function loadState(){
+  state = await get('/api/state');
+  renderWho();
+  renderViews();
+}
+
+function renderWho(){
+  const sel = $('#who');
+  if (!sel.options.length || state.users[0]?.id !== Number(sel.options[0]?.value)) {
+    sel.innerHTML = state.users.map(u => `<option value="${u.id}">${esc(u.name)}（${roleName(u.role)}）</option>`).join('');
+  }
+  if (!state.users.some(u => u.id === meId)) meId = state.users[0]?.id || 0;
+  sel.value = meId;
+  localStorage.setItem('taskboard_me', meId);
+  const me = me();
+  $('#whoTag').innerHTML = me ? `<span class="pill">${roleName(me.role)}</span>` : '';
+}
+function me(){ return state.users.find(u => u.id === meId); }
+function annotators(){ return state.users.filter(u => u.role === 'annotator'); }
+function itemsOf(batchId){ return state.items.filter(i => i.batch_id === batchId); }
+
+$('#who').addEventListener('change', e => { meId = Number(e.target.value); localStorage.setItem('taskboard_me', meId); renderWho(); renderViews(); });
+
+/* ---------------- 视图分发 ---------------- */
+function renderViews(){
+  const me = me();
+  const root = $('#views');
+  root.innerHTML = '';
+  if (!me){ root.innerHTML = '<section class="muted">暂无用户，请先创建用户。</section>'; return; }
+  if (me.role === 'manager') root.appendChild(buildManagerView());
+  if (me.role === 'annotator') root.appendChild(buildAnnotatorView());
+  if (me.role === 'arbitrator') root.appendChild(buildArbitratorView());
+}
+
+/* ---------------- 管理员：批量分派 + 批次进度 ---------------- */
+let mgrSel = 0;
+function buildManagerView(){
+  const el = document.createElement('div');
+  const batches = state.batches;
+  if (batches.some(b => b.id === mgrSel) === false) mgrSel = batches[0]?.id || 0;
+  const anns = annotators();
+  el.innerHTML = `
+    <section>
+      <h2>批次分派</h2>
+      <div class="row">
+        <label>批次
+          <select id="mgrBatch">${batches.map(b => `<option value="${b.id}">#${b.id} ${esc(b.name)} ${batchTag(b)}</option>`).join('') || '<option value="0">暂无批次</option>'}</select>
+        </label>
+        <span class="muted" id="mgrItemCount"></span>
+      </div>
+      <h3>勾选标注员（一次派给本批全部条目，已领取的人沿用原记录、不新增任务）</h3>
+      <div class="chk" id="annChk">
+        ${anns.length ? anns.map(a => `<label><input type="checkbox" class="annCk" value="${a.id}">${esc(a.name)}</label>`).join('') : '<span class="muted">还没有标注员</span>'}
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="assignBtn" ${anns.length && mgrSel ? '' : 'disabled'}>派发给已勾选者</button>
+        <span class="muted">重复勾选不会新增任务，仅返回跳过数量。</span>
+      </div>
+    </section>
+    <section id="progressBox"><h2>批次详情</h2><div class="muted">加载中…</div></section>
+  `;
+  el.querySelector('#mgrBatch').value = mgrSel;
+  el.querySelector('#mgrBatch').addEventListener('change', e => { mgrSel = Number(e.target.value); refreshManagerProgress(el); });
+  const batch = batches.find(b => b.id === mgrSel);
+  el.querySelector('#mgrItemCount').textContent = batch ? `本批 ${itemsOf(batch.id).length} 条` : '';
+  el.querySelector('#assignBtn').addEventListener('click', async () => {
+    const ids = [...el.querySelectorAll('.annCk:checked')].map(c => Number(c.value));
+    if (!ids.length) return say('请至少勾选一位标注员');
+    if (!mgrSel) return say('请先选择批次');
+    try {
+      const r = await post(`/api/batches/${mgrSel}/assign`, {annotator_ids: ids});
+      say(`派发完成：本批 ${r.items} 条 × ${r.annotators} 人；新建分配 ${r.created} 条，已存在沿用 ${r.skipped} 条（重复勾选未新增任务）。`, true);
+      await loadState();
+      refreshManagerProgress(el);
+    } catch (e){ say(e.message); }
+  });
+  queueMicrotask(() => refreshManagerProgress(el));
+  return el;
+}
+
+async function refreshManagerProgress(rootEl){
+  const box = rootEl.querySelector('#progressBox');
+  if (!mgrSel){ box.innerHTML = '<h2>批次详情</h2><div class="muted">暂无批次。</div>'; return; }
+  try{
+    const p = await get(`/api/batches/${mgrSel}/progress`);
+    const frozen = p.status === 'frozen';
+    box.innerHTML = `
+      <h2>批次详情：#${p.batch_id} ${esc(p.batch_name)} ${batchTag({status:p.status})}</h2>
+      <div class="muted">共 ${p.item_count} 条；已分派标注员 ${p.people.length} 人。</div>
+      <table>
+        <thead><tr><th>标注员</th><th>总数</th><th>完成</th><th>待完成</th></tr></thead>
+        <tbody>
+          ${p.people.length ? p.people.map(x =>
+            `<tr><td>${esc(x.name)}</td><td>${x.total}</td><td class="ok">${x.completed}</td><td class="${x.remaining ? 'warn' : ''}">${x.remaining}</td></tr>`).join('')
+            : '<tr><td colspan="4" class="muted">尚未分派给任何人</td></tr>'}
+        </tbody>
+      </table>
+      <h3>提交缺口</h3>
+      ${p.gaps.length ? `<ul class="gap">${p.gaps.map(g =>
+        `<li>条目 #${g.ordinal}（item ${g.item_id}）待 ${g.missing_annotators.map(esc).join('、')} 提交</li>`).join('')}</ul>`
+        : (p.item_count ? '<p class="ok">已分派条目全部提交。</p>' : '<p class="muted">批次还没有条目。</p>')}
+      ${p.unassigned_items.length ? `<p class="warn">以下条目尚未分派给任何人：#${p.unassigned_items.join('、#')}</p>` : ''}
+      ${p.open_disagreements ? `<p class="warn">另有 ${p.open_disagreements} 条分歧尚未仲裁。</p>` : ''}
+      <div class="row" style="margin-top:10px">
+        <button id="freezeBtn" class="small">${frozen ? '批次已冻结' : '冻结金标准'}</button>
+        <button id="goldBtn" class="small ghost">导出金标准</button>
+        <button id="disBtn" class="small ghost">查看分歧</button>
+        <span id="freezeHint" class="muted"></span>
+      </div>`;
+    const freezeBtn = box.querySelector('#freezeBtn');
+    const hint = box.querySelector('#freezeHint');
+    if (frozen){
+      freezeBtn.disabled = true;
+      hint.textContent = '批次已冻结，标注不可修改。';
+    } else if (!p.all_submitted){
+      freezeBtn.disabled = true;
+      hint.innerHTML = '<span class="gap">任务未交齐，冻结入口保持不可用 —— 请先补齐上方缺口。</span>';
+    } else if (p.open_disagreements){
+      freezeBtn.disabled = false;
+      hint.innerHTML = '<span class="warn">已交齐，但仍有未仲裁分歧，冻结将被拒绝。</span>';
+    } else {
+      hint.innerHTML = '<span class="ok">已交齐且无未决分歧，可以冻结。</span>';
+    }
+    freezeBtn.addEventListener('click', async () => {
+      try{
+        const r = await post(`/api/batches/${p.batch_id}/freeze`, {manager_id: meId});
+        say('已冻结，frozen_at=' + r.frozen_at, true);
+        await loadState();
+      }catch(e){ say(e.message); }
+    });
+    box.querySelector('#goldBtn').addEventListener('click', async () => {
+      try{ say(JSON.stringify(await get(`/api/batches/${p.batch_id}/gold`), null, 2), true); }
+      catch(e){ say(e.message); }
+    });
+    box.querySelector('#disBtn').addEventListener('click', async () => {
+      try{ say(JSON.stringify(await get(`/api/batches/${p.batch_id}/disagreements`), null, 2), true); }
+      catch(e){ say(e.message); }
+    });
+  }catch(e){ box.innerHTML = '<h2>批次详情</h2><div class="gap">加载失败：' + esc(e.message) + '</div>'; }
+}
+
+/* ---------------- 标注员：待办 / 已提交 ---------------- */
+function buildAnnotatorView(){
+  const el = document.createElement('div');
+  el.innerHTML = `
+    <section>
+      <h2>我的标注任务</h2>
+      <div class="row">
+        <label>批次筛选
+          <select id="annBatch"><option value="">全部批次</option>${state.batches.map(b => `<option value="${b.id}">#${b.id} ${esc(b.name)}</option>`).join('')}</select>
+        </label>
+        <span id="annStats"></span>
+      </div>
+      <div id="todoBox"><h3>待标注</h3><div class="muted">加载中…</div></div>
+      <div id="doneBox"><h3>已提交</h3><div class="muted">加载中…</div></div>
+    </section>`;
+  el.querySelector('#annBatch').addEventListener('change', () => loadAnnotatorTasks(el));
+  queueMicrotask(() => loadAnnotatorTasks(el));
+  return el;
+}
+
+async function loadAnnotatorTasks(el){
+  const batchId = el.querySelector('#annBatch').value;
+  const qs = new URLSearchParams({user_id: meId});
+  if (batchId) qs.set('batch_id', batchId);
+  try{
+    const t = await get('/api/users/' + meId + '/tasks?' + qs);
+    el.querySelector('#annStats').innerHTML =
+      `共 <span class="stat">${t.total}</span> 条 · 待办 <span class="stat warn">${t.pending_count}</span> · 已提交 <span class="stat ok">${t.submitted_count}</span>`;
+    el.querySelector('#todoBox').innerHTML = '<h3>待标注</h3>' + (t.pending.length
+      ? t.pending.map(taskCardHtml).join('')
+      : '<p class="ok">没有待办，全部已提交 🎉</p>');
+    el.querySelector('#doneBox').innerHTML = '<h3>已提交</h3>' + (t.submitted.length
+      ? t.submitted.map(submittedCardHtml).join('')
+      : '<p class="muted">还没有提交记录。</p>');
+    bindTaskCards(el, t);
+  }catch(e){
+    el.querySelector('#todoBox').innerHTML = '<h3>待标注</h3><div class="gap">加载失败：' + esc(e.message) + '</div>';
+    el.querySelector('#doneBox').innerHTML = '<h3>已提交</h3><div class="muted">—</div>';
+  }
+}
+
+function taskCardHtml(t){
+  return `<details class="item-card" data-item="${t.item_id}" data-batch="${t.batch_id}" ${t.batch_status === 'frozen' ? 'data-frozen="1"' : ''}>
+    <summary>#${t.ordinal} · 批次 ${esc(t.batch_name)} <span class="tag pending">待标注</span></summary>
+    <p>${esc(t.text)}</p>
+    <p class="muted">适用指南：${esc(t.guideline_version)}</p>
+    <input class="labInp" placeholder="标签" ${t.batch_status === 'frozen' ? 'disabled' : ''}>
+    <textarea class="cmtInp" rows="2" placeholder="备注（可选）" ${t.batch_status === 'frozen' ? 'disabled' : ''}></textarea>
+    <div class="row"><button class="small submitBtn" ${t.batch_status === 'frozen' ? 'disabled' : ''}>提交标签与备注</button>
+      <button class="small ghost discBtn">查看条目与讨论</button></div>
+    <div class="discOut"></div>
+  </details>`;
+}
+
+function submittedCardHtml(t){
+  return `<details class="item-card" data-item="${t.item_id}">
+    <summary>#${t.ordinal} · 批次 ${esc(t.batch_name)} <span class="label-chip">${esc(t.label)}</span> <span class="tag done">已提交</span></summary>
+    <p>${esc(t.text)}</p>
+    <p class="muted">备注：${esc(t.comment || '（无）')} · 提交于 ${esc((t.submitted_at || '').replace('T',' ').slice(0,19))}</p>
+    <div class="row">
+      <input class="labInp" style="max-width:200px" value="${esc(t.label)}" placeholder="修改标签" ${t.batch_status === 'frozen' ? 'disabled' : ''}>
+      <textarea class="cmtInp" rows="2" ${t.batch_status === 'frozen' ? 'disabled' : ''}>${esc(t.comment || '')}</textarea>
+    </div>
+    <div class="row"><button class="small submitBtn" ${t.batch_status === 'frozen' ? 'disabled' : ''}>重新提交</button>
+      <button class="small ghost discBtn">查看条目与讨论</button></div>
+    <div class="discOut"></div>
+  </details>`;
+}
+
+function bindTaskCards(el, tasks){
+  el.querySelectorAll('.item-card').forEach(card => {
+    const itemId = Number(card.dataset.item);
+    card.querySelector('.submitBtn')?.addEventListener('click', async () => {
+      const label = card.querySelector('.labInp').value.trim();
+      if (!label){ say('标签不能为空'); return; }
+      const comment = card.querySelector('.cmtInp').value;
+      try{
+        await post('/api/annotations', {item_id: itemId, annotator_id: meId, label, comment});
+        say('条目 #' + itemId + ' 已提交：' + label, true);
+        loadAnnotatorTasks(el);
+      }catch(e){ say(e.message); }
+    });
+    card.querySelector('.discBtn')?.addEventListener('click', async () => {
+      const out = card.querySelector('.discOut');
+      try{
+        const d = await get(`/api/items/${itemId}?user_id=${meId}`);
+        out.innerHTML = `<div class="discuss"><div class="muted">指南 ${esc(d.guideline_version)}：${esc(d.rules)}</div>` +
+          (d.own_annotation ? `<p>我的标注：<span class="label-chip">${esc(d.own_annotation.label)}</span> ${esc(d.own_annotation.comment || '')}</p>` : '') +
+          '<h3 style="margin:6px 0">讨论</h3>' +
+          (d.discussions.length ? d.discussions.map(x =>
+            x.hidden ? `<p class="muted">${esc(x.author)}：${esc(x.body)}</p>`
+                     : `<p><b>${esc(x.name)}</b>${x.contains_answer ? ' <span class="tag done">含答案</span>' : ''}：${esc(x.body)}</p>`).join('')
+            : '<p class="muted">暂无讨论。</p>') + `</div>`;
+      }catch(e){ out.innerHTML = '<p class="gap">' + esc(e.message) + '</p>'; }
+    });
+  });
+}
+
+/* ---------------- 仲裁员：分歧 + 仲裁 ---------------- */
+function buildArbitratorView(){
+  const el = document.createElement('div');
+  el.innerHTML = `
+    <section>
+      <h2>争议仲裁</h2>
+      <label>批次 <select id="arbBatch">${state.batches.map(b => `<option value="${b.id}">#${b.id} ${esc(b.name)} ${batchTag(b)}</option>`).join('') || '<option value="0">暂无批次</option>'}</select></label>
+      <button class="small ghost" id="arbLoad">加载分歧</button>
+      <div id="arbBox" class="muted" style="margin-top:8px">选择批次后加载分歧。</div>
+    </section>`;
+  el.querySelector('#arbLoad').addEventListener('click', async () => {
+    const batchId = Number(el.querySelector('#arbBatch').value);
+    const box = el.querySelector('#arbBox');
+    try{
+      const d = await get(`/api/batches/${batchId}/disagreements`);
+      if (!d.disagreements.length){ box.innerHTML = '<span class="ok">没有待仲裁分歧。</span>'; return; }
+      box.className = '';
+      box.innerHTML = d.disagreements.map(g => `
+        <div class="item-card">
+          <b>条目 #${g.ordinal}</b>：${esc(g.text)}
+          <ul>${g.labels.map(l => `<li>${esc(l.name)} → <span class="label-chip">${esc(l.label)}</span> ${esc(l.comment || '')}</li>`).join('')}</ul>
+          <input class="fLab" placeholder="最终标签">
+          <textarea class="fReason" rows="2" placeholder="仲裁理由（至少5字）"></textarea>
+          <button class="small arbGo" data-item="${g.item_id}">提交仲裁</button>
+        </div>`).join('');
+      box.querySelectorAll('.arbGo').forEach(btn => btn.addEventListener('click', async () => {
+        const card = btn.closest('.item-card');
+        try{
+          await post('/api/adjudications', {
+            item_id: Number(btn.dataset.item), arbitrator_id: meId,
+            final_label: card.querySelector('.fLab').value, reason: card.querySelector('.fReason').value,
+          });
+          say('仲裁已提交', true);
+          btn.closest('.item-card').remove();
+        }catch(e){ say(e.message); }
+      }));
+    }catch(e){ box.className = 'gap'; box.textContent = e.message; }
+  });
+  return el;
+}
+
+/* ---------------- 初始化 ---------------- */
+async function reloadAll(){ await loadState(); }
+loadState().catch(e => say(e.message));
+</script>
 </html>
